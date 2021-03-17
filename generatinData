@@ -1,0 +1,203 @@
+--CREATE DATABASE AppaBurger;
+--CREATE SCHEMA GeneratingData;
+
+-- Generate data: transactions, products, transaction type (store , delivery)
+
+--CREATE PROCEDURE GeneratingData.InitialProperties AS
+
+
+IF OBJECT_ID('tempdb..#CALENDAR_DATE') IS NOT NULL DROP TABLE #CALENDAR_DATE;
+CREATE TABLE #CALENDAR_DATE
+(
+    [CalendarDate] DATE
+)
+
+
+DECLARE @Year INT = '2015';
+DECLARE @YearCnt INT = 2 ;
+DECLARE @StartDate DATE = DATEFROMPARTS(@Year, '01','01')
+DECLARE @EndDate DATE = DATEADD(DAY, -1, DATEADD(YEAR, @YearCnt, @StartDate));
+
+
+WHILE @StartDate <= @EndDate
+      BEGIN
+             INSERT INTO #CALENDAR_DATE
+             (
+                   [CalendarDate]
+             )
+             SELECT
+                   @StartDate
+
+             SET @StartDate = DATEADD(dd, 1, @StartDate)
+      END
+
+
+
+
+IF OBJECT_ID('GeneratingData.CALENDAR_DATE_COMPLETE') IS NOT NULL DROP TABLE GeneratingData.CALENDAR_DATE_COMPLETE;
+
+SELECT *,
+[Day] = DATEPART(DAY, CalendarDate),
+[Month] = DATENAME(MONTH, CalendarDate),
+[Quarter] = DATEPART(QUARTER, CalendarDate),
+[Year] = DATEPART(YEAR, CalendarDate),
+[DayName] = DATENAME(WEEKDAY, CalendarDate),
+[WeekOfYear] = DATENAME(ISO_WEEK, CalendarDate),
+[IsWeekend] = CASE WHEN DATENAME(WEEKDAY, CalendarDate) IN ('Saturday','Sunday') THEN 1 ELSE 0 END,
+[RowNumberCalendarDays] = ROW_NUMBER() OVER ( ORDER BY CalendarDate)
+INTO GeneratingData.CALENDAR_DATE_COMPLETE
+FROM #CALENDAR_DATE;
+
+--SELECT top 25 * FROM GeneratingData.CALENDAR_DATE_COMPLETE;
+
+
+
+
+-- PRODUCTS
+
+
+IF OBJECT_ID('GeneratingData.PRODUCTS') IS NOT NULL DROP TABLE GeneratingData.PRODUCTS;
+CREATE TABLE GeneratingData.PRODUCTS
+(
+    ID INT NOT NULL,
+	Name VARCHAR(30) NOT NULL,
+	Classificacao VARCHAR(30),
+	[Product Launch Date] DATE,
+	Price Float,
+	PRIMARY KEY (ID)
+);
+
+
+DECLARE @launch_date_1 DATE = (SELECT top 1 CalendarDate FROM GeneratingData.CALENDAR_DATE_COMPLETE ORDER BY CalendarDate)
+DECLARE @launch_date_2 DATE = DATEADD(MONTH, 4, @launch_date_1) 
+DECLARE @launch_date_3 DATE = DATEADD(MONTH, 6, @launch_date_1) 
+
+PRINT(@launch_date_1)
+PRINT(@launch_date_2)
+
+
+INSERT INTO GeneratingData.PRODUCTS
+VALUES	(1,'Hamburguer Carne','Comida',@launch_date_1,14),
+		(2,'Batata Frita','Comida',@launch_date_1,8),
+		(3,'Água','Bebida',@launch_date_1,4),
+		(4,'Refrigerante','Bebida',@launch_date_1,5),
+		(5,'Suco','Bebida',@launch_date_1,6.5),
+		(6,'Sorvete','Sobremesa',@launch_date_1,5.5),
+		(7,'Hamburguer de Frango','Comida',@launch_date_2,12.5),
+		(8,'Hamburguer Vegetariano','Comida',@launch_date_3,11),
+		(9,'Biscoito','Sobremesa',@launch_date_3,2);
+
+SELECT * FROM GeneratingData.PRODUCTS;
+
+
+-- SALES
+-- generate transactions, with some assumptions:
+-- sales increase, new products inserted sell more in first 2 months, we dont open monday, sales are increased on weekends
+
+
+--IF OBJECT_ID('tempdb..#SALES_GENERATE_RANDOMIC_NUMBERS') IS NOT NULL DROP TABLE #SALES_GENERATE_RANDOMIC_NUMBERS;
+
+IF OBJECT_ID('tempdb..#GENERATE_ALLOWED_COMBINATION_DAYS_PRODUCTS') IS NOT NULL DROP TABLE #GENERATE_ALLOWED_COMBINATION_DAYS_PRODUCTS;
+SELECT 
+		ca.* ,
+		p.ID,p.Name,p.Classificacao,p.Price
+INTO #GENERATE_ALLOWED_COMBINATION_DAYS_PRODUCTS
+FROM GeneratingData.CALENDAR_DATE_COMPLETE ca, GeneratingData.PRODUCTS p
+WHERE p.[Product Launch Date] <= CalendarDate
+
+select top 10 * from #GENERATE_ALLOWED_COMBINATION_DAYS_PRODUCTS ORDER BY CalendarDate;
+
+
+IF OBJECT_ID('tempdb..#SALES_GENERATE_RANDOMIC_NUMBERS_FACTORS') IS NOT NULL DROP TABLE #SALES_GENERATE_RANDOMIC_NUMBERS_FACTORS;
+
+DECLARE @MaxRowNumberCalendarDays FLOAT = (select MAX(RowNumberCalendarDays) from #GENERATE_ALLOWED_COMBINATION_DAYS_PRODUCTS);
+
+SELECT *,
+RandomNumber = ABS(CHECKSUM(NewId())) % 11,
+factorMultiplicationIsWeekend = CASE WHEN IsWeekend = 1 THEN 4 ELSE 1 END,
+factorMultiplicationVacations = CASE WHEN Month IN ('December','January') THEN 0.5 
+									 WHEN Month IN ('May','June') THEN 1.3
+								ELSE 1 END,
+factorSalesIncreasing = 1+RowNumberCalendarDays/@MaxRowNumberCalendarDays,
+factorProducts = CASE WHEN Name = 'Hamburguer Carne' THEN 2 
+									 WHEN Name IN ('Batata Frita','Refrigerante','Biscoito') THEN 1.8
+									 WHEN Name IN ('Sorvete','Água') THEN 1.6
+								ELSE 1 END,
+factorProductsAlwaysSellAtLeastOne = CASE WHEN Name IN ('Hamburguer Carne','Batata Frita','Refrigerante') THEN 1 ELSE 0 END,
+factorStoreOpened = CASE WHEN DayName = 'Monday' THEN 0 ELSE 1 END
+INTO #SALES_GENERATE_RANDOMIC_NUMBERS_FACTORS
+FROM  #GENERATE_ALLOWED_COMBINATION_DAYS_PRODUCTS
+
+
+
+SELECT
+CalendarDate as Date,
+--Day,
+--Month,
+--Quarter,
+--Year,
+DayName,
+--IsWeekend,
+CONCAT(Name,'-', Classificacao) as Product_Classification,
+--Classificacao,
+Price,
+SalesQuantity = CEILING((RandomNumber+factorProductsAlwaysSellAtLeastOne)*factorMultiplicationIsWeekend*factorMultiplicationVacations*factorSalesIncreasing*factorProducts*factorStoreOpened)
+--INTO #MESSING_SOMA_DATA_FOR_POWER_QUERY_TRANSFORMATION
+FROM  #SALES_GENERATE_RANDOMIC_NUMBERS_FACTORS
+
+
+
+IF OBJECT_ID('GeneratingData.HISTORIC_SALES_PRODUCTS') IS NOT NULL DROP TABLE GeneratingData.HISTORIC_SALES_PRODUCTS;
+SELECT
+CalendarDate as Date,
+--Day,
+--Month,
+--Quarter,
+--Year,
+DayName,
+--IsWeekend,
+CONCAT(Name,'-', Classificacao) as Product_Classification,
+--Classificacao,
+Price,
+SalesQuantity = CEILING((RandomNumber+factorProductsAlwaysSellAtLeastOne)*factorMultiplicationIsWeekend*factorMultiplicationVacations*factorSalesIncreasing*factorProducts*factorStoreOpened)
+INTO GeneratingData.HISTORIC_SALES_PRODUCTS
+FROM #SALES_GENERATE_RANDOMIC_NUMBERS_FACTORS
+ORDER BY CalendarDate ASC;
+
+--IF OBJECT_ID('GeneratingData.PRODUCTS') IS NOT NULL DROP TABLE GeneratingData.PRODUCTS;
+
+--IF OBJECT_ID('GeneratingData.HISTORIC_SALES_PRODUCTS') IS NOT NULL DROP TABLE GeneratingData.HISTORIC_SALES_PRODUCTS;
+--select 
+--CalendarDate as Date,
+--Day,
+--Month,
+--Quarter,
+--Year,
+--DayName,
+--IsWeekend,
+--Name as Product,
+--Classificacao,
+--Price,
+--SalesQuantity = CEILING((RandomNumber+factorProductsAlwaysSellAtLeastOne)*factorMultiplicationIsWeekend*factorMultiplicationVacations*factorSalesIncreasing*factorProducts*factorStoreOpened)
+--INTO GeneratingData.HISTORIC_SALES_PRODUCTS
+--FROM #SALES_GENERATE_RANDOMIC_NUMBERS_FACTORS
+--ORDER BY CalendarDate ASC;
+
+SELECT top 100 * FROM GeneratingData.HISTORIC_SALES_PRODUCTS
+
+SELECT * FROM GeneratingData.HISTORIC_SALES_PRODUCTS ORDER BY DATE ASC;
+
+
+-- Checar os dados
+--SELECT
+--CalendarDate, 
+--SUM(SalesQuantity) AS SalesQuantity,
+--SUM(Revenue) AS Revenue
+--FROM(
+--SELECT 
+--CalendarDate,SalesQuantity,
+--SalesQuantity*Price AS Revenue
+--FROM #HISTORIC_SALES_PRODUCTS
+--) a
+--GROUP BY CalendarDate
+--ORDER BY CalendarDate
